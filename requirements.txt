@@ -1,3 +1,4 @@
-telebot
-sambanova
 flask
+pyTelegramBotAPI
+openai
+samba-nova
