@@ -13,14 +13,15 @@ ADMIN_ID = 5789565027
 
 MODELS = {
     "Multi-Modal (متن و عکس)": [
-        "Llama-3.2-11B-Vision-Instruct", 
-        "Llama-3.2-90B-Vision-Instruct"
+        "Llama-4-Maverick-17B-128E-Instruct"
     ],
     "Text Only (فقط متن)": [
         "DeepSeek-R1", 
         "Meta-Llama-3.3-70B-Instruct", 
         "Qwen2.5-72B-Instruct",
-        "gpt-oss-120b"
+        "gpt-oss-120b",
+        "DeepSeek-R1-Distill-Llama-70B"
+        
     ]
 }
 # لیستی جداگانه از مدل‌های ویژن برای بررسی سریع
