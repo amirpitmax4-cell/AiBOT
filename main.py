@@ -19,7 +19,8 @@ MODELS = {
     "Text Only (فقط متن)": [
         "DeepSeek-R1", 
         "Meta-Llama-3.3-70B-Instruct", 
-        "Qwen2.5-72B-Instruct"
+        "Qwen2.5-72B-Instruct",
+        "gpt-oss-120b"
     ]
 }
 # لیستی جداگانه از مدل‌های ویژن برای بررسی سریع
