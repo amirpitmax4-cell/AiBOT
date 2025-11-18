@@ -3,182 +3,282 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import logging
 import os
 import base64
-from flask import Flask
+import time
+from flask import Flask, render_template_string
 from threading import Thread
 from sambanova import SambaNova, SambaNovaError
 
-# --- تنظیمات اولیه ---
-# در Render حتماً این مقادیر را در بخش Environment Variables وارد کنید
+# --- تنظیمات محیطی (Environment Variables) ---
+# در Render باید این‌ها را در بخش Environment ست کنید
 TELEGRAM_BOT_TOKEN = "8300190763:AAGFBs0TuLVKSlJ0xwI1My-9f1rZlMX0mnA"  # توکن ربات تلگرام خود را اینجا قرار دهید
 SAMBA_API_KEY = "b46dffe7-a5e0-4c75-ade5-04b5ae9819aa"  # کلید API شما
 ADMIN_ID = 5789565027  # شناسه کاربری عددی خودتان را به عنوان ادمین قرار دهید
 
-VISION_MODELS = ["Llama-3.2-11B-Vision-Instruct", "Llama-3.2-90B-Vision-Instruct"] # مدل‌های ویژن نمونه
-TEXT_MODELS = ["DeepSeek-R1", "Meta-Llama-3.3-70B-Instruct", "Qwen2.5-72B-Instruct"]
-AI_MODELS = VISION_MODELS + TEXT_MODELS
+# --- پیکربندی مدل‌ها ---
+# مدل‌ها را دسته‌بندی می‌کنیم تا در منو قشنگ‌تر نمایش داده شوند
+MODELS = {
+    "Vision (تصویری)": ["Llama-3.2-11B-Vision-Instruct", "Llama-3.2-90B-Vision-Instruct"],
+    "Text (متنی)": ["DeepSeek-R1", "Meta-Llama-3.3-70B-Instruct", "Qwen2.5-72B-Instruct"]
+}
 
-# تنظیمات لاگ‌گیری و راه‌اندازی ربات
+# فلت کردن لیست برای استفاده‌های فنی
+ALL_MODELS = [m for category in MODELS.values() for m in category]
+VISION_MODELS = MODELS["Vision (تصویری)"]
+
+# --- راه‌اندازی ---
 logging.basicConfig(level=logging.INFO)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# ساخت کلاینت SambaNova
+# کلاینت سامبا
+samba_client = None
 try:
-    samba_client = SambaNova(api_key=SAMBA_API_KEY)
-    logging.info("SambaNova client initialized successfully.")
+    if SAMBA_API_KEY != "YOUR_API_KEY_HERE":
+        samba_client = SambaNova(api_key=SAMBA_API_KEY)
+        logging.info("✅ SambaNova client connected.")
+    else:
+        logging.warning("⚠️ API Key not set.")
 except Exception as e:
-    logging.error(f"Failed to initialize SambaNova client: {e}")
-    samba_client = None
+    logging.error(f"❌ Error init SambaNova: {e}")
 
-# ذخیره وضعیت (در حافظه موقت - با ریست شدن سرور پاک می‌شود)
-selected_models = {}
+# حافظه موقت
+user_data = {} # ساختار: {user_id: {'model': 'name', ...}}
 
-# --- وب‌سرور Flask برای Render ---
+# --- بخش وب‌سرور (Flask) برای Render ---
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "I am alive! Bot is running..."
+# یک صفحه HTML زیبا برای اینکه نشان دهد ربات زنده است
+HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bot Status</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1e1e2e; color: #cdd6f4; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background-color: #313244; padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); text-align: center; border: 1px solid #45475a; }
+        .status { font-size: 24px; color: #a6e3a1; margin-bottom: 10px; }
+        .pulse { width: 15px; height: 15px; background-color: #a6e3a1; border-radius: 50%; display: inline-block; margin-right: 10px; animation: pulse-animation 2s infinite; }
+        @keyframes pulse-animation { 0% { box-shadow: 0 0 0 0 rgba(166, 227, 161, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(166, 227, 161, 0); } 100% { box-shadow: 0 0 0 0 rgba(166, 227, 161, 0); } }
+        h1 { font-size: 2rem; margin: 0; }
+        p { color: #a6adc8; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="status"><span class="pulse"></span>System Online</div>
+        <h1>Telegram Bot is Running</h1>
+        <p>Managed by Render & Flask</p>
+    </div>
+</body>
+</html>
+"""
 
-def run_web():
-    # رندر پورت را در متغیر محیطی PORT قرار می‌دهد
+@app.route('/')
+def index():
+    return render_template_string(HTML_PAGE)
+
+def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_web)
+    t = Thread(target=run_web_server)
     t.start()
 
-# --- توابع کمکی ---
-def is_authorized(user_id: int) -> bool:
+# --- توابع کمکی ربات ---
+def is_admin(user_id):
     return user_id == ADMIN_ID
 
-def authorized_only(handler_function):
-    def wrapper(message_or_call):
-        user_id = message_or_call.from_user.id
-        if not is_authorized(user_id):
-            bot.send_message(user_id, "⛔ شما اجازه استفاده از این ربات را ندارید.")
-            return
-        return handler_function(message_or_call)
+def check_auth(func):
+    def wrapper(message):
+        if is_admin(message.from_user.id):
+            return func(message)
+        else:
+            bot.reply_to(message, "⛔ <b>دسترسی غیرمجاز</b>\nشما اجازه استفاده از این ربات را ندارید.", parse_mode="HTML")
     return wrapper
 
-# --- Handler های ربات ---
+def split_message(text, limit=4000):
+    """تقسیم پیام‌های طولانی برای تلگرام"""
+    return [text[i:i+limit] for i in range(0, len(text), limit)]
+
+def get_user_model(user_id):
+    return user_data.get(user_id, {}).get('model')
+
+# --- هندلرها (Handlers) ---
 
 @bot.message_handler(commands=['start'])
-@authorized_only
+@check_auth
 def send_welcome(message):
+    user_first_name = message.from_user.first_name
+    text = (
+        f"👋 سلام <b>{user_first_name}</b> عزیز!\n\n"
+        "🤖 من دستیار هوشمند شما هستم که به سرورهای قدرتمند <b>SambaNova</b> متصل است.\n\n"
+        "🚀 <b>امکانات من:</b>\n"
+        "• تحلیل تصاویر پیشرفته\n"
+        "• پاسخ به سوالات پیچیده متنی\n"
+        "• سرعت پردازش فوق‌العاده\n\n"
+        "👇 برای شروع، لطفاً یک مدل هوش مصنوعی را انتخاب کنید:"
+    )
+    
     markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("🤖 انتخاب مدل هوش مصنوعی", callback_data="select_model"))
-    bot.send_message(message.chat.id, "سلام! به ربات هوش مصنوعی خوش آمدید.\nبرای شروع، یک مدل را انتخاب کنید:", reply_markup=markup)
+    markup.add(InlineKeyboardButton("⚙️ انتخاب مدل (Select Model)", callback_data="select_model"))
+    
+    bot.send_message(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "select_model")
-@authorized_only
-def handle_select_model_callback(call):
-    markup = InlineKeyboardMarkup()
-    # دکمه‌ها را در ردیف‌های دوتایی می‌چینیم برای زیبایی بیشتر
-    for i in range(0, len(AI_MODELS), 2):
-        chunk = AI_MODELS[i:i + 2]
-        row = [InlineKeyboardButton(model, callback_data=f"model_{model}") for model in chunk]
-        markup.row(*row)
-    
-    bot.edit_message_text("لطفاً یکی از مدل‌های زیر را انتخاب کنید:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+def handle_model_menu(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "شما ادمین نیستید!", show_alert=True)
+        return
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("model_"))
-@authorized_only
-def handle_model_selection(call):
-    user_id = call.from_user.id
-    model_name = call.data.replace("model_", "")
-    selected_models[user_id] = model_name
+    markup = InlineKeyboardMarkup()
     
-    msg_text = f"✅ مدل فعال: **{model_name}**\n\n"
-    if model_name in VISION_MODELS:
-        msg_text += "🖼️ این مدل تصویری است. یک عکس (با یا بدون کپشن) ارسال کنید."
-    else:
-        msg_text += "📝 این مدل متنی است. سوال یا متن خود را بنویسید."
+    # اضافه کردن دکمه‌ها بر اساس دسته‌بندی
+    for category, models_list in MODELS.items():
+        markup.add(InlineKeyboardButton(f"── {category} ──", callback_data="ignore"))
+        # چیدن دکمه‌ها به صورت دوتایی
+        row_btns = []
+        for model in models_list:
+            short_name = model.split("-")[0] + "..." + model.split("-")[-1] # کوتاه‌کردن نام برای دکمه
+            if len(short_name) > 20: short_name = model[:20]
+            
+            # اگر این مدل انتخاب شده است، تیک کنارش بگذار
+            current_model = get_user_model(call.from_user.id)
+            btn_text = f"✅ {short_name}" if current_model == model else short_name
+            
+            row_btns.append(InlineKeyboardButton(btn_text, callback_data=f"set_{model}"))
         
-    bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+        # اضافه کردن ردیف به کیبورد
+        if len(row_btns) == 2:
+            markup.row(row_btns[0], row_btns[1])
+        elif len(row_btns) == 1:
+            markup.row(row_btns[0])
+        elif len(row_btns) > 2: # برای ۳ تایی
+             markup.row(*row_btns)
+
+    bot.edit_message_text(
+        "🧠 لطفاً مدل مورد نظر خود را جهت پردازش انتخاب کنید:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
+def set_model(call):
+    user_id = call.from_user.id
+    if not is_admin(user_id): return
+
+    model_name = call.data.replace("set_", "")
+    if user_id not in user_data: user_data[user_id] = {}
+    user_data[user_id]['model'] = model_name
+
+    # متن تایید
+    if model_name in VISION_MODELS:
+        icon, type_text = "🖼️", "تحلیل تصویر"
+        guide = "حالا می‌توانید یک <b>عکس</b> (با یا بدون کپشن) ارسال کنید."
+    else:
+        icon, type_text = "📝", "پردازش متن"
+        guide = "حالا می‌توانید <b>سوال یا متن</b> خود را بنویسید."
+
+    text = (
+        f"✅ مدل تغییر کرد!\n\n"
+        f"🔹 <b>مدل:</b> <code>{model_name}</code>\n"
+        f"🔸 <b>نوع:</b> {icon} {type_text}\n\n"
+        f"{guide}"
+    )
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='HTML')
     bot.answer_callback_query(call.id, "مدل ذخیره شد")
 
-@bot.message_handler(content_types=['text'], func=lambda message: not message.text.startswith('/'))
-@authorized_only
-def handle_text_messages(message):
+@bot.message_handler(content_types=['text'], func=lambda m: not m.text.startswith('/'))
+@check_auth
+def handle_text(message):
     user_id = message.from_user.id
-    selected_model = selected_models.get(user_id)
+    model = get_user_model(user_id)
 
-    if not selected_model:
-        bot.reply_to(message, "⚠️ لطفاً ابتدا با دستور /start یک مدل انتخاب کنید.")
+    if not model:
+        bot.reply_to(message, "⚠️ هنوز مدلی انتخاب نکرده‌اید. لطفاً /start را بزنید.")
         return
 
-    if selected_model in VISION_MODELS:
-        bot.reply_to(message, "📷 مدل انتخابی شما تصویری است. لطفاً عکس ارسال کنید.")
+    if model in VISION_MODELS:
+        bot.reply_to(message, "📷 این مدل مخصوص <b>تصاویر</b> است. لطفاً یک عکس ارسال کنید.", parse_mode='HTML')
         return
 
-    processing_msg = bot.reply_to(message, f"⏳ در حال تفکر با مدل {selected_model}...")
+    # ارسال اکشن typing برای حس بهتر
+    bot.send_chat_action(message.chat.id, 'typing')
     
-    if samba_client:
-        try:
-            response = samba_client.chat.completions.create(
-                model=selected_model,
-                messages=[{"role": "user", "content": message.text}],
-            )
-            response_text = response.choices[0].message.content
-        except Exception as e:
-            response_text = f"❌ خطا: {e}"
-    else:
-        response_text = "خطا: کلاینت SambaNova متصل نیست."
+    loading_msg = bot.reply_to(message, f"⏳ <b>در حال فکر کردن با مدل {model}...</b>", parse_mode='HTML')
 
-    # تلگرام محدودیت ۴۰۹۶ کاراکتر دارد، اگر متن طولانی بود باید تکه تکه شود (ساده شده)
-    if len(response_text) > 4000:
-        response_text = response_text[:4000] + "... (متن بریده شد)"
+    try:
+        start_time = time.time()
+        response = samba_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": message.text}],
+        )
+        content = response.choices[0].message.content
+        duration = round(time.time() - start_time, 2)
+
+        # حذف پیام Loading و ارسال پاسخ
+        bot.delete_message(message.chat.id, loading_msg.message_id)
         
-    bot.edit_message_text(response_text, chat_id=message.chat.id, message_id=processing_msg.message_id, parse_mode='Markdown')
+        # اضافه کردن هدر زیبا
+        header = f"🤖 <b>پاسخ {model}:</b>\n⏱️ <code>{duration}s</code>\n\n"
+        full_response = header + content
+        
+        # ارسال پیام (تکه‌تکه اگر طولانی باشد)
+        for chunk in split_message(full_response):
+            bot.reply_to(message, chunk, parse_mode='Markdown')
+
+    except Exception as e:
+        bot.edit_message_text(f"❌ <b>خطا در پردازش:</b>\n<code>{str(e)}</code>", message.chat.id, loading_msg.message_id, parse_mode='HTML')
 
 @bot.message_handler(content_types=['photo'])
-@authorized_only
-def handle_photo_messages(message):
+@check_auth
+def handle_photo(message):
     user_id = message.from_user.id
-    selected_model = selected_models.get(user_id)
+    model = get_user_model(user_id)
 
-    if not selected_model or selected_model not in VISION_MODELS:
-        bot.reply_to(message, "⚠️ لطفاً ابتدا یک مدل تصویری (Vision) انتخاب کنید.")
+    if not model or model not in VISION_MODELS:
+        bot.reply_to(message, "⚠️ مدل فعلی متنی است. لطفاً از منو، یک مدل <b>Vision</b> انتخاب کنید.", parse_mode='HTML')
         return
 
-    processing_msg = bot.reply_to(message, f"👁️ در حال تحلیل تصویر با {selected_model}...")
-    
-    if samba_client:
-        try:
-            file_info = bot.get_file(message.photo[-1].file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-            image_url = f"data:image/jpeg;base64,{base64_image}"
-            
-            caption = message.caption or "Describe this image."
-            messages_payload = [{
-                "role": "user", 
+    bot.send_chat_action(message.chat.id, 'upload_photo')
+    loading_msg = bot.reply_to(message, f"👁️ <b>در حال مشاهده و تحلیل تصویر با {model}...</b>", parse_mode='HTML')
+
+    try:
+        # دانلود عکس
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
+        image_url = f"data:image/jpeg;base64,{base64_image}"
+        
+        caption = message.caption if message.caption else "لطفاً این تصویر را با جزئیات کامل توصیف کن."
+
+        response = samba_client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
                 "content": [
-                    {"type": "text", "text": caption}, 
+                    {"type": "text", "text": caption},
                     {"type": "image_url", "image_url": {"url": image_url}}
                 ]
             }]
-            
-            response = samba_client.chat.completions.create(model=selected_model, messages=messages_payload)
-            response_text = response.choices[0].message.content
-            
-        except Exception as e:
-            response_text = f"❌ خطا: {e}"
-    else:
-        response_text = "خطا: سرویس SambaNova در دسترس نیست."
+        )
+        content = response.choices[0].message.content
+        
+        bot.delete_message(message.chat.id, loading_msg.message_id)
+        
+        for chunk in split_message(content):
+            bot.reply_to(message, chunk, parse_mode='Markdown')
 
-    bot.edit_message_text(response_text, chat_id=message.chat.id, message_id=processing_msg.message_id)
+    except Exception as e:
+        bot.edit_message_text(f"❌ <b>خطا در پردازش تصویر:</b>\n<code>{str(e)}</code>", message.chat.id, loading_msg.message_id, parse_mode='HTML')
 
-# --- نقطه شروع ---
+
+# --- اجرای نهایی ---
 if __name__ == '__main__':
-    # 1. اجرای وب‌سرور در یک ترد جداگانه
+    # 1. اجرای وب سرور برای زنده نگه داشتن در رندر
     keep_alive()
     
-    # 2. اجرای ربات تلگرام
-    if not samba_client:
-        print("Warning: SambaNova client not initialized.")
-    
-    print("Bot is running...")
-    # استفاده از infinity_polling پایداری بیشتری دارد
+    print("🚀 Bot is starting...")
+    # 2. اجرای ربات با قابلیت اتصال مجدد خودکار
     bot.infinity_polling(skip_pending=True)
