@@ -10,10 +10,9 @@ import time
 from sambanova import SambaNova, SambaNovaError
 
 # --- تنظیمات اولیه و متغیرهای محیطی ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
-SAMBA_API_KEY = os.getenv("SAMBA_API_KEY", "YOUR_SAMBA_API_KEY_HERE")
-# ADMIN_ID اولیه (برای اولین راه‌اندازی و دسترسی به پنل ادمین)
-INITIAL_ADMIN_ID = int(os.getenv("INITIAL_ADMIN_ID", "YOUR_INITIAL_ADMIN_ID_HERE"))
+TELEGRAM_BOT_TOKEN = "8300190763:AAGFBs0TuLVKSlJ0xwI1My-9f1rZlMX0mnA"
+SAMBA_API_KEY = "b46dffe7-a5e0-4c75-ade5-04b5ae9819aa"
+INITIAL_ADMIN_ID = 5789565027
 
 # فایل‌های ذخیره‌سازی
 CONFIG_FILE = "config.json"
